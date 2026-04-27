@@ -1,0 +1,35 @@
+# --- builder ---
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+
+# Native build deps for better-sqlite3
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build \
+ && npm prune --omit=dev
+
+# --- runtime ---
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Default DB_PATH points at the Railway/Docker volume mount.
+ENV DB_PATH=/data/autoedu.sqlite
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY package.json ./
+
+# /data is expected to be a mounted volume in production.
+RUN mkdir -p /data && chown -R node:node /data /app
+VOLUME ["/data"]
+
+USER node
+CMD ["node", "dist/index.js"]

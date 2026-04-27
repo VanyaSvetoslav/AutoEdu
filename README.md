@@ -60,6 +60,37 @@ npm run dev
 | `DB_PATH`        | Путь к SQLite-файлу (по умолчанию `./data/autoedu.sqlite`)                                                                 |
 | `TZ`             | Таймзона для интерпретации «сегодня/завтра», по умолчанию `Europe/Moscow`                                                  |
 
+## Деплой на Railway
+
+В репо лежат `Dockerfile` и `railway.json` — Railway соберёт образ автоматически через Docker builder.
+
+1. **New Project → Deploy from GitHub Repo →** выбери `VanyaSvetoslav/AutoEdu`.
+2. **Settings → Variables**, добавь все переменные из таблицы выше:
+   - `BOT_TOKEN` — токен от @BotFather
+   - `ADMIN_TG_ID` — твой числовой id (узнай у @userinfobot)
+   - `ENCRYPTION_KEY` — `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (64 hex-символа)
+   - `DB_PATH=/data/autoedu.sqlite`
+   - `TZ=Europe/Moscow` (опционально)
+3. **Settings → Volumes → Add Volume**:
+   - Mount path: `/data`
+   - Size: `1 GB` хватит за глаза.
+   - Без Volume — БД (юзеры, ключи, mosreg-токен) будет сбрасываться на каждом редеплое!
+4. Дождись успешного билда. В Logs должно появиться `Logged in as @<имя_бота>`.
+5. Открой Telegram, напиши боту `/start` (с админ-аккаунта) → `/settoken …`, `/setcookie …`, `/setstudent <student_id>` → `/today`.
+
+> 💡 Если позже истечёт mosreg-токен (~раз в неделю) — просто пришли боту новые `/settoken` и `/setcookie`, редеплой не нужен.
+
+### Локально через Docker
+
+```bash
+docker build -t autoedu .
+docker run -d --name autoedu \
+  -e BOT_TOKEN=... -e ADMIN_TG_ID=... -e ENCRYPTION_KEY=... \
+  -e DB_PATH=/data/autoedu.sqlite \
+  -v autoedu-data:/data \
+  autoedu
+```
+
 ## Где взять mosreg credentials
 
 1. Залогинься в [authedu.mosreg.ru](https://authedu.mosreg.ru) под нужным аккаунтом.
