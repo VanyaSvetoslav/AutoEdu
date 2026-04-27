@@ -40,6 +40,18 @@ db.exec(`
   INSERT OR IGNORE INTO mosreg_credentials (id) VALUES (1);
 `);
 
+// Migration: add person_id column for Mosreg event calendar (schedule) API.
+// SQLite doesn't support `ADD COLUMN IF NOT EXISTS`, so we attempt and ignore
+// the duplicate column error.
+try {
+  db.exec(`ALTER TABLE mosreg_credentials ADD COLUMN person_id TEXT;`);
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!/duplicate column name/i.test(msg)) {
+    throw err;
+  }
+}
+
 export type UserRow = {
   tg_id: number;
   role: 'admin' | 'user';
@@ -86,6 +98,7 @@ const stmts = {
   setStudent: db.prepare(
     'UPDATE mosreg_credentials SET student_id = ?, profile_id = ?, updated_at = ? WHERE id = 1',
   ),
+  setPerson: db.prepare('UPDATE mosreg_credentials SET person_id = ?, updated_at = ? WHERE id = 1'),
   getCreds: db.prepare<
     [],
     {
@@ -93,10 +106,11 @@ const stmts = {
       encrypted_cookie: string | null;
       student_id: string | null;
       profile_id: string | null;
+      person_id: string | null;
       updated_at: number | null;
     }
   >(
-    'SELECT encrypted_token, encrypted_cookie, student_id, profile_id, updated_at FROM mosreg_credentials WHERE id = 1',
+    'SELECT encrypted_token, encrypted_cookie, student_id, profile_id, person_id, updated_at FROM mosreg_credentials WHERE id = 1',
   ),
 };
 
@@ -157,6 +171,7 @@ export type MosregCredentials = {
   cookie: string | null;
   studentId: string | null;
   profileId: string | null;
+  personId: string | null;
   updatedAt: number | null;
 };
 
@@ -167,6 +182,7 @@ export function getMosregCredentials(): MosregCredentials {
     cookie: row?.encrypted_cookie ? decrypt(row.encrypted_cookie) : null,
     studentId: row?.student_id ?? null,
     profileId: row?.profile_id ?? null,
+    personId: row?.person_id ?? null,
     updatedAt: row?.updated_at ?? null,
   };
 }
@@ -181,4 +197,8 @@ export function setMosregCookie(cookie: string): void {
 
 export function setMosregStudent(studentId: string, profileId: string): void {
   stmts.setStudent.run(studentId, profileId, now());
+}
+
+export function setMosregPerson(personId: string): void {
+  stmts.setPerson.run(personId, now());
 }

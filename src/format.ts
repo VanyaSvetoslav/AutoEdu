@@ -1,6 +1,7 @@
 import type {
   Dynamic,
   HomeworkEntry,
+  ScheduleEntry,
   SubjectMark,
   SubjectMarkPeriod,
   SubjectMarks,
@@ -212,4 +213,97 @@ export function findSubjects(subjects: SubjectMarks[], query: string): SubjectMa
   const q = query.trim().toLowerCase();
   if (!q) return [];
   return subjects.filter((s) => s.subject_name.toLowerCase().includes(q));
+}
+
+function dateFromIso(s: string): string {
+  // "2026-04-27T08:50:00+03:00" -> "2026-04-27"
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1]! : s;
+}
+
+function hhmm(s: string): string {
+  const m = s.match(/T(\d{2}):(\d{2})/);
+  return m ? `${m[1]}:${m[2]}` : '';
+}
+
+function groupScheduleByDate(entries: ScheduleEntry[]): Map<string, ScheduleEntry[]> {
+  const map = new Map<string, ScheduleEntry[]>();
+  for (const e of entries) {
+    const date = dateFromIso(e.start_at);
+    const list = map.get(date) ?? [];
+    list.push(e);
+    map.set(date, list);
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => a.start_at.localeCompare(b.start_at));
+  }
+  return new Map([...map.entries()].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function formatScheduleEntry(entry: ScheduleEntry, index: number): string {
+  const lines: string[] = [];
+  const start = hhmm(entry.start_at);
+  const finish = hhmm(entry.finish_at);
+  const time = start && finish ? `${start}–${finish}` : start || finish || '';
+  const subject = escapeHtml(entry.subject_name || 'Без предмета');
+  const num = `${index}.`;
+
+  const flags: string[] = [];
+  if (entry.cancelled) flags.push('❌ отменён');
+  if (entry.replaced) flags.push('🔁 замена');
+  const flagsStr = flags.length > 0 ? ` <i>(${flags.join(', ')})</i>` : '';
+
+  const head = time
+    ? `<b>${num} 🕘 ${escapeHtml(time)} · ${subject}</b>${flagsStr}`
+    : `<b>${num} 📚 ${subject}</b>${flagsStr}`;
+  lines.push(head);
+
+  const room = entry.room_number || entry.room_name;
+  if (room) {
+    const roomLabel = entry.room_number
+      ? `каб. ${escapeHtml(entry.room_number)}` +
+        (entry.room_name ? ` · ${escapeHtml(entry.room_name)}` : '')
+      : escapeHtml(entry.room_name ?? '');
+    lines.push(`📍 ${roomLabel}`);
+  }
+
+  const hw = entry.homework;
+  if (hw && hw.descriptions && hw.descriptions.length > 0) {
+    const text = hw.descriptions
+      .map((d) => d.trim())
+      .filter(Boolean)
+      .join('\n');
+    if (text) {
+      lines.push(`📝 ${escapeHtml(text)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatSchedule(entries: ScheduleEntry[], from: string, to: string): string[] {
+  if (entries.length === 0) {
+    const range = from === to ? humanDate(from) : `${humanDate(from)} — ${humanDate(to)}`;
+    return [`<b>🗓 Расписание · ${escapeHtml(range)}</b>\n\n<i>Уроков не найдено.</i>`];
+  }
+
+  const grouped = groupScheduleByDate(entries);
+  const messages: string[] = [];
+  let current = '';
+  const MAX = 3500;
+
+  for (const [date, list] of grouped) {
+    const header = `<b>🗓 ${escapeHtml(humanDate(date))}</b>`;
+    const blocks = list.map((e, i) => formatScheduleEntry(e, i + 1));
+    const dayBlock = [header, ...blocks].join('\n\n');
+
+    if (current.length + dayBlock.length + 2 > MAX && current) {
+      messages.push(current);
+      current = dayBlock;
+    } else {
+      current = current ? `${current}\n\n${dayBlock}` : dayBlock;
+    }
+  }
+  if (current) messages.push(current);
+  return messages;
 }

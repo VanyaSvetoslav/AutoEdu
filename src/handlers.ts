@@ -12,6 +12,7 @@ import {
   listUsers,
   revokeInviteKey,
   setMosregCookie,
+  setMosregPerson,
   setMosregStudent,
   setMosregToken,
   touchUser,
@@ -19,9 +20,11 @@ import {
 import { parseRange, shiftIso, todayIso, tomorrowIso, weekRange, humanRangeRu } from './dates.js';
 import {
   fetchHomeworks,
+  fetchSchedule,
   fetchSubjectMarks,
   MosregApiError,
   MosregNotConfiguredError,
+  MosregPersonNotConfiguredError,
   mosregDebugCall,
 } from './mosreg.js';
 import {
@@ -29,6 +32,7 @@ import {
   findSubjects,
   formatHomeworks,
   formatMarksOverview,
+  formatSchedule,
   formatSubjectMarks,
 } from './format.js';
 import { generateInviteKey } from './keys.js';
@@ -45,7 +49,7 @@ function isAuthorized(tgId: number): boolean {
   return user !== undefined;
 }
 
-const HELP_USER = `<b>AutoEdu — домашка и оценки из mosreg.ru</b>
+const HELP_USER = `<b>AutoEdu — домашка, оценки и расписание из mosreg.ru</b>
 
 <b>Домашка:</b>
 /today — ДЗ на сегодня
@@ -53,6 +57,13 @@ const HELP_USER = `<b>AutoEdu — домашка и оценки из mosreg.ru<
 /week — ДЗ на ближайшие 7 дней
 /hw <code>YYYY-MM-DD</code> — ДЗ на конкретную дату
 /hw <code>YYYY-MM-DD..YYYY-MM-DD</code> — ДЗ на диапазон дат
+
+<b>Расписание:</b>
+/schedule — расписание на сегодня
+/schedule <code>tomorrow</code> — на завтра
+/schedule <code>week</code> — на ближайшие 7 дней
+/schedule <code>YYYY-MM-DD</code> — на конкретную дату
+/schedule <code>YYYY-MM-DD..YYYY-MM-DD</code> — на диапазон дат
 
 <b>Оценки:</b>
 /marks — средние по всем предметам
@@ -70,6 +81,7 @@ const HELP_ADMIN = `${HELP_USER}
 /settoken <code>&lt;Authorization&gt;</code> — обновить Bearer-токен mosreg
 /setcookie <code>&lt;Cookie&gt;</code> — обновить Cookie mosreg
 /setstudent <code>&lt;student_id&gt;</code> [profile_id] — задать ID ученика
+/setperson <code>&lt;UUID&gt;</code> — задать person_id (UUID) для расписания
 /credstatus — статус сохранённых credentials
 /apidebug — сделать тестовый запрос к mosreg и показать сырой ответ`;
 
@@ -79,6 +91,54 @@ function quickKeyboard(): InlineKeyboard {
     .text('➡️ Завтра', 'hw:tomorrow')
     .row()
     .text('🗓 Неделя', 'hw:week');
+}
+
+function scheduleKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('📅 Сегодня', 'sch:today')
+    .text('➡️ Завтра', 'sch:tomorrow')
+    .row()
+    .text('🗓 Неделя', 'sch:week');
+}
+
+async function sendSchedule(ctx: Context, from: string, to: string): Promise<void> {
+  await ctx.replyWithChatAction('typing').catch(() => undefined);
+  try {
+    const entries = await fetchSchedule(from, to);
+    const chunks = formatSchedule(entries, from, to);
+    for (let i = 0; i < chunks.length; i += 1) {
+      const isLast = i === chunks.length - 1;
+      await ctx.reply(chunks[i]!, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...(isLast ? { reply_markup: scheduleKeyboard() } : {}),
+      });
+    }
+  } catch (err) {
+    if (err instanceof MosregNotConfiguredError) {
+      await ctx.reply(
+        '⚠️ Mosreg ещё не настроен. Админ должен вызвать /settoken, /setcookie и /setstudent.',
+      );
+      return;
+    }
+    if (err instanceof MosregPersonNotConfiguredError) {
+      await ctx.reply(
+        '⚠️ Для расписания нужен <code>person_id</code> (UUID). Админ должен вызвать <code>/setperson &lt;UUID&gt;</code>.',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+    if (err instanceof MosregApiError) {
+      const hint =
+        err.status === 401 || err.status === 403
+          ? '\n\n💡 Похоже, токен или Cookie протухли. Админ должен обновить их через /settoken и /setcookie.'
+          : '';
+      await ctx.reply(`❌ Ошибка mosreg API (${err.status}).${hint}`);
+      return;
+    }
+    console.error('schedule fetch failed', err);
+    await ctx.reply('❌ Не удалось получить расписание. Попробуй ещё раз через минуту.');
+  }
 }
 
 async function sendHomeworks(ctx: Context, from: string, to: string): Promise<void> {
@@ -205,6 +265,32 @@ export function registerHandlers(bot: Bot): void {
     }),
   );
 
+  bot.command('schedule', (ctx) =>
+    requireAuth(ctx, async () => {
+      const arg = (ctx.match ?? '').toString().trim().toLowerCase();
+      let range: { from: string; to: string } | null = null;
+      if (!arg || arg === 'today') {
+        const d = todayIso();
+        range = { from: d, to: d };
+      } else if (arg === 'tomorrow') {
+        const d = tomorrowIso();
+        range = { from: d, to: d };
+      } else if (arg === 'week') {
+        range = weekRange();
+      } else {
+        range = parseRange(arg);
+      }
+      if (!range) {
+        await ctx.reply(
+          'Использование:\n<code>/schedule</code> — сегодня\n<code>/schedule tomorrow</code>\n<code>/schedule week</code>\n<code>/schedule 2026-04-27</code>\n<code>/schedule 2026-04-27..2026-05-03</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      await sendSchedule(ctx, range.from, range.to);
+    }),
+  );
+
   const sendMarksError = async (ctx: Context, err: unknown): Promise<void> => {
     if (err instanceof MosregNotConfiguredError) {
       await ctx.reply('⚠️ Mosreg ещё не настроен. Админ должен вызвать /settoken и /setstudent.');
@@ -275,6 +361,25 @@ export function registerHandlers(bot: Bot): void {
     } else {
       const { from, to } = weekRange();
       await sendHomeworks(ctx, from, to);
+    }
+  });
+
+  bot.callbackQuery(/^sch:(today|tomorrow|week)$/, async (ctx) => {
+    if (!ctx.from || !isAuthorized(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const which = ctx.match[1];
+    if (which === 'today') {
+      const d = todayIso();
+      await sendSchedule(ctx, d, d);
+    } else if (which === 'tomorrow') {
+      const d = tomorrowIso();
+      await sendSchedule(ctx, d, d);
+    } else {
+      const { from, to } = weekRange();
+      await sendSchedule(ctx, from, to);
     }
   });
 
@@ -413,6 +518,32 @@ export function registerHandlers(bot: Bot): void {
     }),
   );
 
+  bot.command('setperson', (ctx) =>
+    requireAdmin(ctx, async () => {
+      const arg = (ctx.match ?? '').toString().trim();
+      if (!arg) {
+        await ctx.reply(
+          'Использование: <code>/setperson &lt;UUID&gt;</code>\n\nUUID можно подсмотреть в запросе mosreg к <code>eventcalendar</code> (параметр <code>person_ids</code>).',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      const uuidRe =
+        /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!uuidRe.test(arg)) {
+        await ctx.reply(
+          '❌ person_id должен быть UUID вида <code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>.',
+          {
+            parse_mode: 'HTML',
+          },
+        );
+        return;
+      }
+      setMosregPerson(arg);
+      await ctx.reply(`✅ person_id=<code>${arg}</code> сохранён.`, { parse_mode: 'HTML' });
+    }),
+  );
+
   bot.command('credstatus', (ctx) =>
     requireAdmin(ctx, async () => {
       const c = getMosregCredentials();
@@ -427,6 +558,7 @@ export function registerHandlers(bot: Bot): void {
         `Cookie:    ${c.cookie ? `✅ ${cookieLen} байт` : '➖ не задан (опционально)'}`,
         `Student:   ${c.studentId ?? '—'}`,
         `Profile:   ${c.profileId ?? '—'}`,
+        `Person:    ${c.personId ?? '— (нужен для /schedule)'}`,
         `Обновлено: ${updated}`,
       ];
       await ctx.reply(`<pre>${escapeHtml(lines.join('\n'))}</pre>`, { parse_mode: 'HTML' });

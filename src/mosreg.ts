@@ -79,6 +79,36 @@ export type SubjectMarksResponse = {
   payload: SubjectMarks[];
 };
 
+export type ScheduleHomework = {
+  presence_status_id: number;
+  total_count: number;
+  execute_count: number;
+  descriptions: string[];
+  materials: unknown;
+};
+
+export type ScheduleEntry = {
+  id: number;
+  source: string;
+  start_at: string;
+  finish_at: string;
+  cancelled: boolean;
+  replaced: boolean;
+  lesson_type: string | null;
+  room_name: string | null;
+  room_number: string | null;
+  subject_id: number | null;
+  subject_name: string | null;
+  homework: ScheduleHomework | null;
+  marks: unknown;
+  is_missed_lesson: boolean | null;
+};
+
+export type ScheduleResponse = {
+  total_count: number;
+  response: ScheduleEntry[];
+};
+
 export class MosregApiError extends Error {
   public readonly status: number;
   public readonly body: string;
@@ -94,6 +124,12 @@ export class MosregNotConfiguredError extends Error {
     super(
       'Mosreg credentials are not configured. Use /settoken, /setcookie and /setstudent first.',
     );
+  }
+}
+
+export class MosregPersonNotConfiguredError extends Error {
+  constructor() {
+    super('Mosreg person_id (UUID) is not configured. Admin must run /setperson <UUID> first.');
   }
 }
 
@@ -179,6 +215,51 @@ export async function fetchSubjectMarks(): Promise<SubjectMarks[]> {
     throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
   }
   return parsed.payload ?? [];
+}
+
+export async function fetchSchedule(from: string, to: string): Promise<ScheduleEntry[]> {
+  const creds = getMosregCredentials();
+  if (!creds.token || !creds.studentId) {
+    throw new MosregNotConfiguredError();
+  }
+  if (!creds.personId) {
+    throw new MosregPersonNotConfiguredError();
+  }
+
+  const profileId = creds.profileId ?? creds.studentId;
+  const sources = 'PLAN,AE,EC,EVENTS,AFISHA,ORGANIZER,OLYMPIAD,PROF';
+  const url =
+    `${BASE_URL}/api/eventcalendar/v1/api/events` +
+    `?person_ids=${encodeURIComponent(creds.personId)}` +
+    `&begin_date=${encodeURIComponent(from)}` +
+    `&end_date=${encodeURIComponent(to)}` +
+    `&source_types=${encodeURIComponent(sources)}` +
+    `&expand=homework`;
+
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/plain, */*',
+    Authorization: creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`,
+    'Profile-Id': profileId,
+    'Profile-Type': 'student',
+    'User-Agent': USER_AGENT,
+    'X-mes-subsystem': 'familyweb',
+  };
+  if (creds.cookie && creds.cookie.trim() !== '') {
+    headers.Cookie = creds.cookie;
+  }
+
+  const res = await request(url, { method: 'GET', headers });
+  const text = await res.body.text();
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new MosregApiError(res.statusCode, text);
+  }
+  let parsed: ScheduleResponse;
+  try {
+    parsed = JSON.parse(text) as ScheduleResponse;
+  } catch {
+    throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
+  }
+  return parsed.response ?? [];
 }
 
 export type MosregDebugResult = {
