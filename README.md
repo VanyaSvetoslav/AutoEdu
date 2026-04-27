@@ -93,11 +93,44 @@ Logged in as @<имя_бота>
 
 `TELEGRAM_PROXY_URL` принимает:
 
-- `http://host:port` / `https://host:port` — HTTP CONNECT прокси (`undici.ProxyAgent`).
+- `http://host:port` / `https://host:port` — HTTP CONNECT прокси.
 - `socks5://host:port` — SOCKS5, DNS резолвится клиентом.
 - `socks5h://host:port` — SOCKS5, DNS резолвится прокси (важно, если у тебя локальный DNS не резолвит `api.telegram.org`).
 - `socks4://host:port` — SOCKS4.
 - С авторизацией: `socks5://user:password@host:port`.
+
+### Сеть Docker и доступ к прокси
+
+В `docker-compose.yml` по умолчанию стоит `network_mode: host` — контейнер делит сетевой стек хоста, поэтому `socks5://127.0.0.1:PORT` или `socks5://192.168.20.3:20170` (если этот IP — сам хост) работают без NAT-фокусов. Бот ничего не слушает извне (long polling — outbound-only), так что host-network безопасно.
+
+Если по какой-то причине нужен bridge-режим — убери `network_mode: host` из compose, и тогда:
+
+- SOCKS5 на хосте должен слушать `0.0.0.0` (а не только `127.0.0.1`), иначе из контейнера до него не достучаться.
+- Внутри контейнера хост виден как `host.docker.internal` (нужно добавить `extra_hosts: ["host.docker.internal:host-gateway"]`) или через IP `docker0` (`172.17.0.1`).
+
+### Если `npm ci` падает с ETIMEDOUT при сборке
+
+`registry.npmjs.org` иногда плохо доступен из РФ. В Dockerfile есть `ARG NPM_REGISTRY` — можно собрать с зеркалом:
+
+```bash
+docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+docker compose up -d
+```
+
+Или раскомментируй секцию `args` в `docker-compose.yml`:
+
+```yaml
+build:
+  context: .
+  args:
+    NPM_REGISTRY: https://registry.npmmirror.com
+```
+
+Альтернатива — сборка через HTTP-прокси (npm SOCKS не понимает!): подними локально HTTP-прокси (например, `gost -L=http://127.0.0.1:8118 -F=socks5://192.168.20.3:20170`) и:
+
+```bash
+docker compose build --build-arg HTTPS_PROXY=http://192.168.20.3:8118
+```
 
 ## Деплой на Railway
 

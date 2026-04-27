@@ -7,8 +7,19 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Optional: override the npm registry at build time when registry.npmjs.org
+# is slow/blocked from your network (e.g. running build inside Russia).
+# Examples: https://registry.npmmirror.com, https://npm.pkg.github.com.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+# Optional: pass through HTTP(S) proxy at build time if needed for `npm ci`.
+# (Note: npm does NOT support socks proxies; use http(s)://… here.)
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY}
+
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm config set registry "$NPM_REGISTRY" \
+ && npm ci --prefer-offline --no-audit --fund=false --no-progress
 
 COPY tsconfig.json ./
 COPY src ./src
