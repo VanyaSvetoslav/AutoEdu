@@ -1,13 +1,21 @@
 services:
   autoedu:
-    build: .
+    build:
+      context: .
+      # Pass through HTTP(S) proxy / npm registry mirror at build time when
+      # registry.npmjs.org is slow or blocked from your network.
+      # Uncomment and fill in if `npm ci` errors with ETIMEDOUT during build.
+      # args:
+      #   NPM_REGISTRY: https://registry.npmmirror.com
+      #   HTTPS_PROXY: http://192.168.20.3:8118
     image: autoedu:local
     container_name: autoedu
     restart: unless-stopped
     env_file: .env
     volumes:
       - ./data:/data
-    # On a home server with the host firewall blocking outbound proxy ports,
-    # uncomment the next line so the container shares the host's network namespace
-    # (this also lets `TELEGRAM_PROXY_URL=socks5://127.0.0.1:PORT` work).
-    # network_mode: host
+    # Share the host's network stack so the bot can reach proxies bound to
+    # 127.0.0.1 / LAN IPs (e.g. socks5://192.168.20.3:20170 from `mtg`)
+    # without going through Docker's bridge NAT. The bot is outbound-only —
+    # no incoming ports — so host networking is the simplest correct choice.
+    network_mode: host
