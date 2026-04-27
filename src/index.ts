@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     { command: 'tomorrow', description: 'ДЗ на завтра' },
     { command: 'week', description: 'ДЗ на 7 дней' },
     { command: 'hw', description: 'ДЗ на дату или диапазон' },
+    { command: 'marks', description: 'Оценки (или /marks <предмет>)' },
     { command: 'help', description: 'Справка' },
   ]);
 

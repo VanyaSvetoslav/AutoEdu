@@ -19,11 +19,18 @@ import {
 import { parseRange, shiftIso, todayIso, tomorrowIso, weekRange, humanRangeRu } from './dates.js';
 import {
   fetchHomeworks,
+  fetchSubjectMarks,
   MosregApiError,
   MosregNotConfiguredError,
   mosregDebugCall,
 } from './mosreg.js';
-import { formatHomeworks, escapeHtml } from './format.js';
+import {
+  escapeHtml,
+  findSubjects,
+  formatHomeworks,
+  formatMarksOverview,
+  formatSubjectMarks,
+} from './format.js';
 import { generateInviteKey } from './keys.js';
 
 const ADMIN_ID = Number(config.ADMIN_TG_ID);
@@ -38,14 +45,19 @@ function isAuthorized(tgId: number): boolean {
   return user !== undefined;
 }
 
-const HELP_USER = `<b>AutoEdu — домашка из mosreg.ru</b>
+const HELP_USER = `<b>AutoEdu — домашка и оценки из mosreg.ru</b>
 
-<b>Команды:</b>
+<b>Домашка:</b>
 /today — ДЗ на сегодня
 /tomorrow — ДЗ на завтра
 /week — ДЗ на ближайшие 7 дней
 /hw <code>YYYY-MM-DD</code> — ДЗ на конкретную дату
 /hw <code>YYYY-MM-DD..YYYY-MM-DD</code> — ДЗ на диапазон дат
+
+<b>Оценки:</b>
+/marks — средние по всем предметам
+/marks <code>&lt;часть_названия&gt;</code> — детально по предмету (например: <code>/marks алгебра</code>)
+
 /help — эта справка`;
 
 const HELP_ADMIN = `${HELP_USER}
@@ -190,6 +202,60 @@ export function registerHandlers(bot: Bot): void {
         return;
       }
       await sendHomeworks(ctx, range.from, range.to);
+    }),
+  );
+
+  const sendMarksError = async (ctx: Context, err: unknown): Promise<void> => {
+    if (err instanceof MosregNotConfiguredError) {
+      await ctx.reply('⚠️ Mosreg ещё не настроен. Админ должен вызвать /settoken и /setstudent.');
+      return;
+    }
+    if (err instanceof MosregApiError) {
+      const hint =
+        err.status === 401 || err.status === 403
+          ? '\n\n💡 Похоже, токен протух. Админ должен обновить его через /settoken.'
+          : '';
+      await ctx.reply(`❌ Ошибка mosreg API (${err.status}).${hint}`);
+      return;
+    }
+    console.error('marks fetch failed', err);
+    await ctx.reply('❌ Не удалось получить оценки. Попробуй ещё раз через минуту.');
+  };
+
+  bot.command('marks', (ctx) =>
+    requireAuth(ctx, async () => {
+      await ctx.replyWithChatAction('typing').catch(() => undefined);
+      const query = (ctx.match ?? '').toString().trim();
+      try {
+        const subjects = await fetchSubjectMarks();
+        if (!query) {
+          const chunks = formatMarksOverview(subjects);
+          for (const c of chunks) {
+            await ctx.reply(c, { parse_mode: 'HTML' });
+          }
+          return;
+        }
+        const matches = findSubjects(subjects, query);
+        if (matches.length === 0) {
+          const known = subjects
+            .map((s) => s.subject_name)
+            .sort((a, b) => a.localeCompare(b, 'ru'))
+            .join(', ');
+          await ctx.reply(
+            `❌ Предмет «${escapeHtml(query)}» не найден.\n\nДоступные: ${escapeHtml(known)}`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+        for (const subject of matches) {
+          const chunks = formatSubjectMarks(subject);
+          for (const c of chunks) {
+            await ctx.reply(c, { parse_mode: 'HTML' });
+          }
+        }
+      } catch (err) {
+        await sendMarksError(ctx, err);
+      }
     }),
   );
 
