@@ -10,6 +10,7 @@
 ## Возможности
 
 ### Команды для пользователей
+
 - `/start <KEY>` — активировать приглашение
 - `/today` — ДЗ на сегодня
 - `/tomorrow` — ДЗ на завтра
@@ -19,6 +20,7 @@
 - `/help` — справка
 
 ### Команды админа
+
 - `/genkey [N]` — создать `N` приглашений (по умолчанию 1)
 - `/keys` — последние 50 ключей и их статус
 - `/revoke <KEY>` — отозвать ключ
@@ -43,19 +45,20 @@ npm start
 ```
 
 Для разработки:
+
 ```bash
 npm run dev
 ```
 
 ## Конфигурация (`.env`)
 
-| Переменная | Описание |
-|---|---|
-| `BOT_TOKEN` | Токен бота от [@BotFather](https://t.me/BotFather) |
-| `ADMIN_TG_ID` | Числовой Telegram-ID админа (узнать у [@userinfobot](https://t.me/userinfobot)) |
+| Переменная       | Описание                                                                                                                   |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `BOT_TOKEN`      | Токен бота от [@BotFather](https://t.me/BotFather)                                                                         |
+| `ADMIN_TG_ID`    | Числовой Telegram-ID админа (узнать у [@userinfobot](https://t.me/userinfobot))                                            |
 | `ENCRYPTION_KEY` | 32 байта в hex (64 hex-символа). Сгенерировать: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
-| `DB_PATH` | Путь к SQLite-файлу (по умолчанию `./data/autoedu.sqlite`) |
-| `TZ` | Таймзона для интерпретации «сегодня/завтра», по умолчанию `Europe/Moscow` |
+| `DB_PATH`        | Путь к SQLite-файлу (по умолчанию `./data/autoedu.sqlite`)                                                                 |
+| `TZ`             | Таймзона для интерпретации «сегодня/завтра», по умолчанию `Europe/Moscow`                                                  |
 
 ## Где взять mosreg credentials
 
@@ -83,6 +86,7 @@ Telegram ──► grammY (long polling) ──► handlers ──► undici ─
 ```
 
 Endpoint, используемый ботом:
+
 ```
 GET https://authedu.mosreg.ru/api/family/web/v1/homeworks
     ?from=YYYY-MM-DD&to=YYYY-MM-DD&student_id=NNN
@@ -95,14 +99,14 @@ X-mes-subsystem: familyweb
 
 ## Скрипты
 
-| Команда | |
-|---|---|
-| `npm run dev` | tsx watch — горячий перезапуск |
-| `npm run build` | TypeScript → `dist/` |
-| `npm start` | запуск из `dist/` |
-| `npm run typecheck` | tsc --noEmit |
-| `npm run lint` | ESLint |
-| `npm run format` | Prettier --write |
+| Команда             |                                |
+| ------------------- | ------------------------------ |
+| `npm run dev`       | tsx watch — горячий перезапуск |
+| `npm run build`     | TypeScript → `dist/`           |
+| `npm start`         | запуск из `dist/`              |
+| `npm run typecheck` | tsc --noEmit                   |
+| `npm run lint`      | ESLint                         |
+| `npm run format`    | Prettier --write               |
 
 ## Безопасность
 
