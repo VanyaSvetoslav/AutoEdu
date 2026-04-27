@@ -42,6 +42,43 @@ export type HomeworksResponse = {
   payload: HomeworkEntry[];
 };
 
+export type Dynamic = 'UP' | 'DOWN' | 'STABLE' | string;
+
+export type SubjectMark = {
+  id: number;
+  value: string;
+  values: unknown;
+  comment: string | null;
+  weight: number;
+  control_form_name: string | null;
+  date: string;
+  is_point: boolean;
+  is_exam: boolean;
+};
+
+export type SubjectMarkPeriod = {
+  start: string;
+  end: string;
+  title: string;
+  dynamic: Dynamic;
+  value: string;
+  marks: SubjectMark[];
+};
+
+export type SubjectMarks = {
+  subject_id: number;
+  subject_name: string;
+  average: string;
+  average_by_all: string | null;
+  dynamic: Dynamic;
+  year_mark: string | null;
+  periods: SubjectMarkPeriod[];
+};
+
+export type SubjectMarksResponse = {
+  payload: SubjectMarks[];
+};
+
 export class MosregApiError extends Error {
   public readonly status: number;
   public readonly body: string;
@@ -101,6 +138,43 @@ export async function fetchHomeworks(from: string, to: string): Promise<Homework
   let parsed: HomeworksResponse;
   try {
     parsed = JSON.parse(text) as HomeworksResponse;
+  } catch {
+    throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
+  }
+  return parsed.payload ?? [];
+}
+
+export async function fetchSubjectMarks(): Promise<SubjectMarks[]> {
+  const creds = getMosregCredentials();
+  if (!creds.token || !creds.studentId) {
+    throw new MosregNotConfiguredError();
+  }
+
+  const profileId = creds.profileId ?? creds.studentId;
+  const url = `${BASE_URL}/api/family/web/v1/subject_marks?student_id=${encodeURIComponent(
+    creds.studentId,
+  )}`;
+
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/plain, */*',
+    Authorization: creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`,
+    'Profile-Id': profileId,
+    'Profile-Type': 'student',
+    'User-Agent': USER_AGENT,
+    'X-mes-subsystem': 'familyweb',
+  };
+  if (creds.cookie && creds.cookie.trim() !== '') {
+    headers.Cookie = creds.cookie;
+  }
+
+  const res = await request(url, { method: 'GET', headers });
+  const text = await res.body.text();
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new MosregApiError(res.statusCode, text);
+  }
+  let parsed: SubjectMarksResponse;
+  try {
+    parsed = JSON.parse(text) as SubjectMarksResponse;
   } catch {
     throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
   }

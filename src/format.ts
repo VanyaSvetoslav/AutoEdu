@@ -1,4 +1,10 @@
-import type { HomeworkEntry } from './mosreg.js';
+import type {
+  Dynamic,
+  HomeworkEntry,
+  SubjectMark,
+  SubjectMarkPeriod,
+  SubjectMarks,
+} from './mosreg.js';
 
 const DAY_NAMES = [
   'Воскресенье',
@@ -113,4 +119,97 @@ export function formatHomeworks(entries: HomeworkEntry[], from: string, to: stri
   }
   if (current) messages.push(current);
   return messages;
+}
+
+function dynamicIcon(d: Dynamic | undefined): string {
+  switch (d) {
+    case 'UP':
+      return '📈';
+    case 'DOWN':
+      return '📉';
+    case 'STABLE':
+    case 'NONE':
+      return '➖';
+    default:
+      return '➖';
+  }
+}
+
+function formatMarkValue(m: SubjectMark): string {
+  if (m.value === '5') return '<b>5</b>';
+  if (m.value === '2' || m.value === '1') return `<b>${escapeHtml(m.value)}</b>`;
+  return escapeHtml(m.value);
+}
+
+function formatMarkLine(m: SubjectMark): string {
+  const value = formatMarkValue(m);
+  const weight = m.weight && m.weight !== 1 ? ` ×${m.weight}` : '';
+  const form = m.control_form_name ? ` · ${escapeHtml(m.control_form_name)}` : '';
+  const parts = m.date ? m.date.split('-') : [];
+  const date = parts.length === 3 ? ` · ${escapeHtml(`${parts[2]}.${parts[1]}`)}` : '';
+  const exam = m.is_exam ? ' 📝' : '';
+  const comment = m.comment && m.comment.trim() ? ` <i>(${escapeHtml(m.comment.trim())})</i>` : '';
+  return `${value}${weight}${exam}${form}${date}${comment}`;
+}
+
+export function formatMarksOverview(subjects: SubjectMarks[]): string[] {
+  if (subjects.length === 0) {
+    return ['<b>📊 Оценки</b>\n\n<i>Оценок пока нет.</i>'];
+  }
+  const sorted = [...subjects].sort((a, b) => a.subject_name.localeCompare(b.subject_name, 'ru'));
+  const lines: string[] = ['<b>📊 Оценки — средние по предметам</b>', ''];
+  for (const s of sorted) {
+    const icon = dynamicIcon(s.dynamic);
+    const avg = s.average ?? '—';
+    const year = s.year_mark ? ` · год: <b>${escapeHtml(s.year_mark)}</b>` : '';
+    lines.push(`${icon} ${escapeHtml(s.subject_name)} — <b>${escapeHtml(avg)}</b>${year}`);
+  }
+  lines.push('');
+  lines.push('<i>Подробно: /marks &lt;часть_названия_предмета&gt;</i>');
+  return [lines.join('\n')];
+}
+
+function formatPeriod(p: SubjectMarkPeriod): string {
+  const lines: string[] = [];
+  const icon = dynamicIcon(p.dynamic);
+  const range = `${escapeHtml(p.start)}–${escapeHtml(p.end)}`;
+  lines.push(`<b>🗓 ${escapeHtml(p.title)}</b> (${range}) — ${escapeHtml(p.value)} ${icon}`);
+  if (p.marks.length === 0) {
+    lines.push('<i>(оценок нет)</i>');
+  } else {
+    const sorted = [...p.marks].sort((a, b) => a.date.localeCompare(b.date));
+    for (const m of sorted) {
+      lines.push(`• ${formatMarkLine(m)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+export function formatSubjectMarks(subject: SubjectMarks): string[] {
+  const header = [
+    `<b>📊 ${escapeHtml(subject.subject_name)}</b>`,
+    `Средняя: <b>${escapeHtml(subject.average ?? '—')}</b> ${dynamicIcon(subject.dynamic)}` +
+      (subject.year_mark ? ` · год: <b>${escapeHtml(subject.year_mark)}</b>` : ''),
+  ].join('\n');
+  const periods = subject.periods.map(formatPeriod);
+
+  const messages: string[] = [];
+  let current = header;
+  const MAX = 3500;
+  for (const block of periods) {
+    if (current.length + block.length + 2 > MAX) {
+      messages.push(current);
+      current = block;
+    } else {
+      current = `${current}\n\n${block}`;
+    }
+  }
+  if (current) messages.push(current);
+  return messages;
+}
+
+export function findSubjects(subjects: SubjectMarks[], query: string): SubjectMarks[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return subjects.filter((s) => s.subject_name.toLowerCase().includes(q));
 }
