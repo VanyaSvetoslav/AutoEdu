@@ -27,9 +27,9 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY package.json ./
 
-# /data is expected to be a mounted volume in production.
+# /data is expected to be mounted as a Railway/Docker volume in production.
+# (Do not use the VOLUME keyword — Railway forbids it; the mount is configured in the Railway UI.)
 RUN mkdir -p /data && chown -R node:node /data /app
-VOLUME ["/data"]
 
 USER node
 CMD ["node", "dist/index.js"]
