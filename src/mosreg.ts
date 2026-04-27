@@ -62,7 +62,7 @@ export class MosregNotConfiguredError extends Error {
 
 export async function fetchHomeworks(from: string, to: string): Promise<HomeworkEntry[]> {
   const creds = getMosregCredentials();
-  if (!creds.token || !creds.cookie || !creds.studentId) {
+  if (!creds.token || !creds.studentId) {
     throw new MosregNotConfiguredError();
   }
 
@@ -71,20 +71,26 @@ export async function fetchHomeworks(from: string, to: string): Promise<Homework
     to,
   )}&student_id=${encodeURIComponent(creds.studentId)}`;
 
+  // Mosreg accepts the request with just Authorization + X-mes-subsystem
+  // (verified via Bruno against /api/family/web/v1/homeworks). We send the
+  // other headers to mimic the browser, but Cookie is now optional — when the
+  // user only provides /settoken (no /setcookie), we skip the Cookie header
+  // rather than send an empty one (which mosreg has been observed to 401 on).
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/plain, */*',
+    Authorization: creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`,
+    'Profile-Id': profileId,
+    'Profile-Type': 'student',
+    'User-Agent': USER_AGENT,
+    'X-mes-subsystem': 'familyweb',
+  };
+  if (creds.cookie && creds.cookie.trim() !== '') {
+    headers.Cookie = creds.cookie;
+  }
+
   const res = await request(url, {
     method: 'GET',
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
-      Authorization: creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`,
-      Cookie: creds.cookie,
-      'Content-Type': 'application/json;charset=UTF-8',
-      'Profile-Id': profileId,
-      'Profile-Type': 'student',
-      Referer: `${BASE_URL}/diary/homeworks/homeworks/`,
-      'User-Agent': USER_AGENT,
-      'X-mes-subsystem': 'familyweb',
-    },
+    headers,
   });
 
   const text = await res.body.text();
@@ -99,4 +105,46 @@ export async function fetchHomeworks(from: string, to: string): Promise<Homework
     throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
   }
   return parsed.payload ?? [];
+}
+
+export type MosregDebugResult = {
+  url: string;
+  sentAuthLen: number;
+  sentCookie: number | null;
+  status: number;
+  bodyPreview: string;
+};
+
+export async function mosregDebugCall(from: string, to: string): Promise<MosregDebugResult> {
+  const creds = getMosregCredentials();
+  if (!creds.token || !creds.studentId) {
+    throw new MosregNotConfiguredError();
+  }
+  const profileId = creds.profileId ?? creds.studentId;
+  const url = `${BASE_URL}/api/family/web/v1/homeworks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(
+    to,
+  )}&student_id=${encodeURIComponent(creds.studentId)}`;
+  const auth = creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`;
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/plain, */*',
+    Authorization: auth,
+    'Profile-Id': profileId,
+    'Profile-Type': 'student',
+    'User-Agent': USER_AGENT,
+    'X-mes-subsystem': 'familyweb',
+  };
+  const cookieLen =
+    creds.cookie && creds.cookie.trim() !== '' ? Buffer.byteLength(creds.cookie, 'utf8') : null;
+  if (cookieLen !== null) {
+    headers.Cookie = creds.cookie!;
+  }
+  const res = await request(url, { method: 'GET', headers });
+  const body = await res.body.text();
+  return {
+    url,
+    sentAuthLen: Buffer.byteLength(auth, 'utf8'),
+    sentCookie: cookieLen,
+    status: res.statusCode,
+    bodyPreview: body.slice(0, 400),
+  };
 }
