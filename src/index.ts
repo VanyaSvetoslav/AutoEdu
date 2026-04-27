@@ -1,9 +1,27 @@
 import { Bot } from 'grammy';
 import { config } from './config.js';
 import { registerHandlers } from './handlers.js';
+import { createTelegramProxyAgent } from './proxy.js';
 
 async function main(): Promise<void> {
-  const bot = new Bot(config.BOT_TOKEN);
+  const proxyAgent = createTelegramProxyAgent(config.TELEGRAM_PROXY_URL);
+  if (proxyAgent) {
+    console.log(`Routing Telegram traffic through proxy: ${config.TELEGRAM_PROXY_URL}`);
+  }
+
+  // grammY uses node-fetch under the hood; node-fetch accepts an `agent` option
+  // on each request. Mosreg uses undici directly (no proxy), so its requests
+  // continue to exit through the host's real IP.
+  const bot = new Bot(config.BOT_TOKEN, {
+    client: proxyAgent
+      ? {
+          baseFetchConfig: {
+            agent: proxyAgent,
+            compress: true,
+          },
+        }
+      : {},
+  });
   registerHandlers(bot);
 
   await bot.api.setMyCommands([

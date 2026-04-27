@@ -52,13 +52,52 @@ npm run dev
 
 ## Конфигурация (`.env`)
 
-| Переменная       | Описание                                                                                                                   |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `BOT_TOKEN`      | Токен бота от [@BotFather](https://t.me/BotFather)                                                                         |
-| `ADMIN_TG_ID`    | Числовой Telegram-ID админа (узнать у [@userinfobot](https://t.me/userinfobot))                                            |
-| `ENCRYPTION_KEY` | 32 байта в hex (64 hex-символа). Сгенерировать: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
-| `DB_PATH`        | Путь к SQLite-файлу (по умолчанию `./data/autoedu.sqlite`)                                                                 |
-| `TZ`             | Таймзона для интерпретации «сегодня/завтра», по умолчанию `Europe/Moscow`                                                  |
+| Переменная           | Описание                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `BOT_TOKEN`          | Токен бота от [@BotFather](https://t.me/BotFather)                                                                                       |
+| `ADMIN_TG_ID`        | Числовой Telegram-ID админа (узнать у [@userinfobot](https://t.me/userinfobot))                                                          |
+| `ENCRYPTION_KEY`     | 32 байта в hex (64 hex-символа). Сгенерировать: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`               |
+| `DB_PATH`            | Путь к SQLite-файлу (по умолчанию `./data/autoedu.sqlite`)                                                                               |
+| `TZ`                 | Таймзона для интерпретации «сегодня/завтра», по умолчанию `Europe/Moscow`                                                                |
+| `TELEGRAM_PROXY_URL` | Опционально. Прокси **только** для Telegram Bot API (`http://`/`https://`/`socks5://`/`socks5h://`/`socks4://`). Mosreg всегда напрямую. |
+
+## Деплой на свой сервер (Россия / за прокси) — рекомендуется
+
+Если ты в РФ и Railway не может достучаться до `authedu.mosreg.ru` (получаешь `UND_ERR_CONNECT_TIMEOUT`), запускай бот **на домашнем Linux-сервере**:
+
+- Telegram API при этом ходит **через твой прокси** (SOCKS5/HTTP) — потому что в РФ `api.telegram.org` блокируется.
+- Mosreg API ходит **напрямую** через реальный IP сервера — российский IP mosreg как раз и нужен.
+
+```bash
+git clone https://github.com/VanyaSvetoslav/AutoEdu.git
+cd AutoEdu
+cp .env.example .env
+# заполни BOT_TOKEN, ADMIN_TG_ID, ENCRYPTION_KEY (см. ниже),
+# и раскомментируй TELEGRAM_PROXY_URL=socks5://192.168.20.3:20170
+docker compose up -d --build
+docker compose logs -f
+```
+
+В логах должно появиться:
+
+```
+Routing Telegram traffic through proxy: socks5://192.168.20.3:20170
+AutoEdu bot starting…
+Logged in as @<имя_бота>
+```
+
+> ⚠️ **MTProto-прокси (`mtg`) НЕ подходит** для Bot API — он работает только с MTProto-клиентами (Telegram Desktop/мобайл). Боту нужен обычный HTTP/SOCKS-прокси.
+> Если у тебя `mtg` сам ходит наружу через какой-то SOCKS5 (как у тебя — `socks5://192.168.20.3:20170`), укажи **именно этот** SOCKS5 в `TELEGRAM_PROXY_URL` — бот пойдёт через него, минуя `mtg`.
+
+### Поддерживаемые схемы прокси
+
+`TELEGRAM_PROXY_URL` принимает:
+
+- `http://host:port` / `https://host:port` — HTTP CONNECT прокси (`undici.ProxyAgent`).
+- `socks5://host:port` — SOCKS5, DNS резолвится клиентом.
+- `socks5h://host:port` — SOCKS5, DNS резолвится прокси (важно, если у тебя локальный DNS не резолвит `api.telegram.org`).
+- `socks4://host:port` — SOCKS4.
+- С авторизацией: `socks5://user:password@host:port`.
 
 ## Деплой на Railway
 

@@ -12,6 +12,13 @@ const schema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 32 bytes hex (64 hex chars)'),
   DB_PATH: z.string().default('./data/autoedu.sqlite'),
   TZ: z.string().default('Europe/Moscow'),
+  TELEGRAM_PROXY_URL: z
+    .string()
+    .optional()
+    .refine(
+      (v) => v === undefined || v === '' || /^(https?|socks5h?|socks4):\/\//.test(v),
+      'TELEGRAM_PROXY_URL must start with http://, https://, socks5://, socks5h:// or socks4://',
+    ),
 });
 
 const parsed = schema.safeParse(process.env);
