@@ -17,7 +17,12 @@ import {
   touchUser,
 } from './db.js';
 import { parseRange, shiftIso, todayIso, tomorrowIso, weekRange, humanRangeRu } from './dates.js';
-import { fetchHomeworks, MosregApiError, MosregNotConfiguredError } from './mosreg.js';
+import {
+  fetchHomeworks,
+  MosregApiError,
+  MosregNotConfiguredError,
+  mosregDebugCall,
+} from './mosreg.js';
 import { formatHomeworks, escapeHtml } from './format.js';
 import { generateInviteKey } from './keys.js';
 
@@ -53,7 +58,8 @@ const HELP_ADMIN = `${HELP_USER}
 /settoken <code>&lt;Authorization&gt;</code> — обновить Bearer-токен mosreg
 /setcookie <code>&lt;Cookie&gt;</code> — обновить Cookie mosreg
 /setstudent <code>&lt;student_id&gt;</code> [profile_id] — задать ID ученика
-/credstatus — статус сохранённых credentials`;
+/credstatus — статус сохранённых credentials
+/apidebug — сделать тестовый запрос к mosreg и показать сырой ответ`;
 
 function quickKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
@@ -347,14 +353,40 @@ export function registerHandlers(bot: Bot): void {
       const updated = c.updatedAt
         ? new Date(c.updatedAt * 1000).toISOString().replace('T', ' ').slice(0, 19)
         : '—';
+      const tokenLen = c.token ? Buffer.byteLength(c.token, 'utf8') : 0;
+      const cookieLen = c.cookie ? Buffer.byteLength(c.cookie, 'utf8') : 0;
+      const tokenPrefix = c.token ? c.token.slice(0, 12) + '…' : '';
       const lines = [
-        `Token:     ${c.token ? '✅ установлен' : '❌ нет'}`,
-        `Cookie:    ${c.cookie ? '✅ установлен' : '❌ нет'}`,
+        `Token:     ${c.token ? `✅ ${tokenLen} байт (${tokenPrefix})` : '❌ нет'}`,
+        `Cookie:    ${c.cookie ? `✅ ${cookieLen} байт` : '➖ не задан (опционально)'}`,
         `Student:   ${c.studentId ?? '—'}`,
         `Profile:   ${c.profileId ?? '—'}`,
         `Обновлено: ${updated}`,
       ];
       await ctx.reply(`<pre>${escapeHtml(lines.join('\n'))}</pre>`, { parse_mode: 'HTML' });
+    }),
+  );
+
+  bot.command('apidebug', (ctx) =>
+    requireAdmin(ctx, async () => {
+      try {
+        const result = await mosregDebugCall(todayIso(), todayIso());
+        const cookiePart = result.sentCookie ? `Cookie len: ${result.sentCookie}` : 'Cookie: skip';
+        const lines = [
+          `URL: ${result.url}`,
+          `Headers: Authorization len=${result.sentAuthLen}, ${cookiePart}`,
+          `→ HTTP ${result.status}`,
+          '',
+          'Body (first 400 chars):',
+          result.bodyPreview,
+        ];
+        await ctx.reply(`<pre>${escapeHtml(lines.join('\n'))}</pre>`, { parse_mode: 'HTML' });
+      } catch (err) {
+        await ctx.reply(
+          `❌ apidebug failed: <pre>${escapeHtml(String(err instanceof Error ? (err.stack ?? err.message) : err))}</pre>`,
+          { parse_mode: 'HTML' },
+        );
+      }
     }),
   );
 
