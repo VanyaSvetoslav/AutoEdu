@@ -154,11 +154,14 @@ function formatMarkLine(m: SubjectMark): string {
 }
 
 // Σ(value*weight) / Σ(weight) over numeric mark values. Skips non-numeric
-// values like "Н" / "ОСВ". Returns null if there are no numeric marks.
+// values like "Н" / "ОСВ" and empty/whitespace strings. Without the
+// whitespace check, `Number("") === 0`, which would silently drag the
+// average down on a 1–5 scale. Returns null if there are no numeric marks.
 function weightedAverage(marks: SubjectMark[]): number | null {
   let sum = 0;
   let weights = 0;
   for (const m of marks) {
+    if (!m.value || !m.value.trim()) continue;
     const v = Number(m.value);
     if (!Number.isFinite(v)) continue;
     const w = m.weight && m.weight > 0 ? m.weight : 1;
@@ -173,10 +176,12 @@ function formatAverage(avg: number | null): string {
   return avg === null ? '—' : avg.toFixed(2);
 }
 
-// "5×3 · 4×6 · 3×2"
+// "5×3 · 4×6 · 3×2". Skips empty/whitespace and non-numeric values for the
+// same reason as `weightedAverage` (Number("") === 0).
 function markDistribution(marks: SubjectMark[]): string {
   const counts = new Map<string, number>();
   for (const m of marks) {
+    if (!m.value || !m.value.trim()) continue;
     if (!Number.isFinite(Number(m.value))) continue;
     counts.set(m.value, (counts.get(m.value) ?? 0) + 1);
   }

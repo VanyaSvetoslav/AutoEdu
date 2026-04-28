@@ -20,7 +20,14 @@ import {
   touchUser,
 } from './db.js';
 import type { UserMeta, UserRow } from './db.js';
-import { parseRange, shiftIso, todayIso, tomorrowIso, weekRange, humanRangeRu } from './dates.js';
+import {
+  resolveRangeArg,
+  shiftIso,
+  todayIso,
+  tomorrowIso,
+  weekRange,
+  humanRangeRu,
+} from './dates.js';
 import {
   fetchHomeworks,
   fetchSchedule,
@@ -31,6 +38,7 @@ import {
   mosregDebugCall,
   mosregScheduleDebugCall,
 } from './mosreg.js';
+import type { HomeworkEntry } from './mosreg.js';
 import {
   escapeHtml,
   findSubjects,
@@ -61,6 +69,9 @@ const HELP_USER = `<b>AutoEdu — домашка, оценки и расписа
 /week — ДЗ на ближайшие 7 дней
 /hw <code>YYYY-MM-DD</code> — ДЗ на конкретную дату
 /hw <code>YYYY-MM-DD..YYYY-MM-DD</code> — ДЗ на диапазон дат
+/subject <code>&lt;часть_названия&gt;</code> — ДЗ только по этому предмету за неделю
+/subject <code>&lt;часть_названия&gt; tomorrow|week|YYYY-MM-DD|YYYY-MM-DD..YYYY-MM-DD</code> — он же за конкретный период
+ℹ️ После /week и /hw появятся кнопки с предметами — нажми, чтобы отфильтровать выдачу.
 
 <b>Расписание:</b>
 /schedule — расписание на сегодня
@@ -112,15 +123,16 @@ function fullName(u: { first_name: string | null; last_name: string | null }): s
 function userMention(u: UserRow): string {
   const name = fullName(u);
   const username = u.username ? `@${u.username}` : null;
-  const display = username ?? name ?? `id ${u.tg_id}`;
+  const display = username ?? name ?? String(u.tg_id);
   const link = `<a href="tg://user?id=${u.tg_id}">${escapeHtml(display)}</a>`;
-  // Add a trailer with the bits not already in `display`, so we always show
-  // the numeric id (handy for /kick by id) and the full name when only
-  // @username was used in the link.
+  // Trailer always includes the numeric id so admins can /kick by id, and
+  // adds the full name when only @username was used in the link. When we
+  // have neither username nor name, the link itself already shows the id —
+  // skip the redundant duplicate.
   const extras: string[] = [];
   if (username && name) extras.push(escapeHtml(name));
-  extras.push(`<code>${u.tg_id}</code>`);
-  return `${link} · ${extras.join(' · ')}`;
+  if (username || name) extras.push(`<code>${u.tg_id}</code>`);
+  return extras.length === 0 ? link : `${link} · ${extras.join(' · ')}`;
 }
 
 function quickKeyboard(): InlineKeyboard {
@@ -179,36 +191,138 @@ async function sendSchedule(ctx: Context, from: string, to: string): Promise<voi
   }
 }
 
+// Builds a keyboard with one button per distinct subject in `entries`.
+// callback_data fits in Telegram's 64-byte limit: "hwsub:" (6) + 10-byte
+// from + ":" + 10-byte to + ":" + numeric subject_id (up to ~10 digits) =
+// well under the limit. Subjects are sorted by name and placed in 2 columns.
+function subjectFilterKeyboard(
+  entries: HomeworkEntry[],
+  from: string,
+  to: string,
+): InlineKeyboard | null {
+  const seen = new Map<number, string>();
+  for (const e of entries) {
+    if (e.subject_id && e.subject_name && !seen.has(e.subject_id)) {
+      seen.set(e.subject_id, e.subject_name);
+    }
+  }
+  if (seen.size === 0) return null;
+  const sorted = [...seen.entries()].sort(([, a], [, b]) => a.localeCompare(b, 'ru'));
+  const kb = new InlineKeyboard();
+  let col = 0;
+  for (const [sid, name] of sorted) {
+    if (col === 2) {
+      kb.row();
+      col = 0;
+    }
+    kb.text(`📚 ${name}`, `hwsub:${from}:${to}:${sid}`);
+    col += 1;
+  }
+  return kb;
+}
+
+function filterHomeworksBySubjectId(entries: HomeworkEntry[], subjectId: number): HomeworkEntry[] {
+  return entries.filter((e) => e.subject_id === subjectId);
+}
+
+function filterHomeworksBySubjectQuery(entries: HomeworkEntry[], query: string): HomeworkEntry[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter((e) => (e.subject_name ?? '').toLowerCase().includes(q));
+}
+
+async function replyMosregError(ctx: Context, err: unknown, what: string): Promise<void> {
+  if (err instanceof MosregNotConfiguredError) {
+    await ctx.reply(
+      '⚠️ Mosreg ещё не настроен. Админ должен вызвать /settoken, /setcookie и /setstudent.',
+    );
+    return;
+  }
+  if (err instanceof MosregApiError) {
+    const hint =
+      err.status === 401 || err.status === 403
+        ? '\n\n💡 Похоже, токен или Cookie протухли. Админ должен обновить их через /settoken и /setcookie.'
+        : '';
+    await ctx.reply(`❌ Ошибка mosreg API (${err.status}).${hint}`);
+    return;
+  }
+  console.error(`${what} fetch failed`, err);
+  await ctx.reply(`❌ Не удалось получить ${what}. Попробуй ещё раз через минуту.`);
+}
+
 async function sendHomeworks(ctx: Context, from: string, to: string): Promise<void> {
   await ctx.replyWithChatAction('typing').catch(() => undefined);
   try {
     const entries = await fetchHomeworks(from, to);
     const chunks = formatHomeworks(entries, from, to);
+    const subjectKb = subjectFilterKeyboard(entries, from, to);
     for (let i = 0; i < chunks.length; i += 1) {
       const isLast = i === chunks.length - 1;
       await ctx.reply(chunks[i]!, {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
-        ...(isLast ? { reply_markup: quickKeyboard() } : {}),
+        // On the last chunk, prefer subject-filter buttons (more useful for
+        // multi-day ranges); fall back to the today/tomorrow/week shortcuts
+        // when there are no homeworks.
+        ...(isLast ? { reply_markup: subjectKb ?? quickKeyboard() } : {}),
       });
     }
   } catch (err) {
-    if (err instanceof MosregNotConfiguredError) {
+    await replyMosregError(ctx, err, 'домашку');
+  }
+}
+
+// Renders homework filtered to a single subject. `subjectLabel` is what we
+// display in the heading (full name when we resolved by id, or the user's
+// query verbatim when we matched by substring).
+async function sendHomeworksForSubject(
+  ctx: Context,
+  from: string,
+  to: string,
+  filter: { kind: 'id'; subjectId: number } | { kind: 'query'; query: string },
+): Promise<void> {
+  await ctx.replyWithChatAction('typing').catch(() => undefined);
+  try {
+    const entries = await fetchHomeworks(from, to);
+    const filtered =
+      filter.kind === 'id'
+        ? filterHomeworksBySubjectId(entries, filter.subjectId)
+        : filterHomeworksBySubjectQuery(entries, filter.query);
+
+    let label: string;
+    if (filter.kind === 'id') {
+      label = entries.find((e) => e.subject_id === filter.subjectId)?.subject_name ?? '—';
+    } else {
+      label = filter.query;
+    }
+
+    const range = humanRangeRu(from, to);
+    if (filtered.length === 0) {
+      // Suggest neighbouring subject names so the user can fix typos quickly.
+      const known = [...new Set(entries.map((e) => e.subject_name).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'ru'))
+        .join(', ');
+      const knownPart = known ? `\n\nДоступные предметы за этот период: ${escapeHtml(known)}` : '';
       await ctx.reply(
-        '⚠️ Mosreg ещё не настроен. Админ должен вызвать /settoken, /setcookie и /setstudent.',
+        `📚 <b>${escapeHtml(label)}</b> · ${escapeHtml(range)}\n\n<i>ДЗ нет.</i>${knownPart}`,
+        { parse_mode: 'HTML' },
       );
       return;
     }
-    if (err instanceof MosregApiError) {
-      const hint =
-        err.status === 401 || err.status === 403
-          ? '\n\n💡 Похоже, токен или Cookie протухли. Админ должен обновить их через /settoken и /setcookie.'
-          : '';
-      await ctx.reply(`❌ Ошибка mosreg API (${err.status}).${hint}`);
-      return;
+
+    const heading = `📚 <b>${escapeHtml(label)}</b> · ${escapeHtml(range)}`;
+    const chunks = formatHomeworks(filtered, from, to);
+    // Prefix the first chunk with the subject heading so the user always sees
+    // which subject and range they're looking at.
+    chunks[0] = `${heading}\n\n${chunks[0]}`;
+    for (let i = 0; i < chunks.length; i += 1) {
+      await ctx.reply(chunks[i]!, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
     }
-    console.error('homework fetch failed', err);
-    await ctx.reply('❌ Не удалось получить домашку. Попробуй ещё раз через минуту.');
+  } catch (err) {
+    await replyMosregError(ctx, err, 'домашку по предмету');
   }
 }
 
@@ -308,10 +422,10 @@ export function registerHandlers(bot: Bot): void {
   bot.command('hw', (ctx) =>
     requireAuth(ctx, async () => {
       const arg = (ctx.match ?? '').toString().trim();
-      const range = parseRange(arg);
+      const range = resolveRangeArg(arg);
       if (!range) {
         await ctx.reply(
-          'Использование:\n<code>/hw 2026-04-27</code>\n<code>/hw 2026-04-27..2026-05-03</code>',
+          'Использование:\n<code>/hw 2026-04-27</code>\n<code>/hw 2026-04-27..2026-05-03</code>\n<code>/hw today|tomorrow|week</code>',
           { parse_mode: 'HTML' },
         );
         return;
@@ -320,21 +434,51 @@ export function registerHandlers(bot: Bot): void {
     }),
   );
 
+  // /subject <part_of_subject_name> [today|tomorrow|week|YYYY-MM-DD|YYYY-MM-DD..YYYY-MM-DD]
+  // Default range is the current week. The subject query is everything
+  // except the (optional) trailing range token, so multi-word subject names
+  // ("информационная безопасность") work without quoting.
+  bot.command('subject', (ctx) =>
+    requireAuth(ctx, async () => {
+      const arg = (ctx.match ?? '').toString().trim();
+      if (!arg) {
+        await ctx.reply(
+          'Использование:\n<code>/subject алгебра</code> — за неделю\n<code>/subject алгебра tomorrow</code>\n<code>/subject алгебра 2026-04-27..2026-05-03</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      const tokens = arg.split(/\s+/);
+      let range: { from: string; to: string } | null = null;
+      let subjectQuery = arg;
+      if (tokens.length > 1) {
+        const last = tokens[tokens.length - 1]!;
+        const candidate = resolveRangeArg(last);
+        if (candidate) {
+          range = candidate;
+          subjectQuery = tokens.slice(0, -1).join(' ');
+        }
+      }
+      if (!range) {
+        range = weekRange();
+      }
+      if (!subjectQuery.trim()) {
+        await ctx.reply('❌ Не указан предмет. Пример: <code>/subject алгебра week</code>', {
+          parse_mode: 'HTML',
+        });
+        return;
+      }
+      await sendHomeworksForSubject(ctx, range.from, range.to, {
+        kind: 'query',
+        query: subjectQuery,
+      });
+    }),
+  );
+
   bot.command('schedule', (ctx) =>
     requireAuth(ctx, async () => {
-      const arg = (ctx.match ?? '').toString().trim().toLowerCase();
-      let range: { from: string; to: string } | null = null;
-      if (!arg || arg === 'today') {
-        const d = todayIso();
-        range = { from: d, to: d };
-      } else if (arg === 'tomorrow') {
-        const d = tomorrowIso();
-        range = { from: d, to: d };
-      } else if (arg === 'week') {
-        range = weekRange();
-      } else {
-        range = parseRange(arg);
-      }
+      const arg = (ctx.match ?? '').toString().trim();
+      const range = resolveRangeArg(arg);
       if (!range) {
         await ctx.reply(
           'Использование:\n<code>/schedule</code> — сегодня\n<code>/schedule tomorrow</code>\n<code>/schedule week</code>\n<code>/schedule 2026-04-27</code>\n<code>/schedule 2026-04-27..2026-05-03</code>',
@@ -417,6 +561,21 @@ export function registerHandlers(bot: Bot): void {
       const { from, to } = weekRange();
       await sendHomeworks(ctx, from, to);
     }
+  });
+
+  // hwsub:<from>:<to>:<subject_id> — subject filter buttons appended to a
+  // /week or /hw response. Re-fetches homeworks for the same range and
+  // shows only entries with the requested subject_id.
+  bot.callbackQuery(/^hwsub:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2}):(\d+)$/, async (ctx) => {
+    if (!ctx.from || !isAuthorized(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const from = ctx.match[1]!;
+    const to = ctx.match[2]!;
+    const subjectId = Number(ctx.match[3]!);
+    await sendHomeworksForSubject(ctx, from, to, { kind: 'id', subjectId });
   });
 
   bot.callbackQuery(/^sch:(today|tomorrow|week)$/, async (ctx) => {

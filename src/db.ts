@@ -93,7 +93,11 @@ const stmts = {
   upsertUser: db.prepare(`
     INSERT INTO users (tg_id, role, used_key, joined_at, last_seen_at, username, first_name, last_name)
     VALUES (@tg_id, @role, @used_key, @joined_at, @last_seen_at, @username, @first_name, @last_name)
-    ON CONFLICT(tg_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+    ON CONFLICT(tg_id) DO UPDATE SET
+      last_seen_at = excluded.last_seen_at,
+      username     = excluded.username,
+      first_name   = excluded.first_name,
+      last_name    = excluded.last_name
   `),
   touchUser: db.prepare('UPDATE users SET last_seen_at = ? WHERE tg_id = ?'),
   updateUserMeta: db.prepare(
