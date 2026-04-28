@@ -12,7 +12,15 @@ services:
     container_name: autoedu
     restart: unless-stopped
     env_file: .env
+    # Pin DB_PATH inside the container so the SQLite file always lands in the
+    # mounted volume below, regardless of what the user copied into .env from
+    # .env.example (where DB_PATH defaults to a host-style ./data/... path).
+    environment:
+      DB_PATH: /data/autoedu.sqlite
     volumes:
+      # Persist the SQLite DB across `docker compose up --build` rebuilds.
+      # Maps the project's local ./data dir to the container path that
+      # DB_PATH points at above.
       - ./data:/data
     # Share the host's network stack so the bot can reach proxies bound to
     # 127.0.0.1 / LAN IPs (e.g. socks5://192.168.20.3:20170 from `mtg`)

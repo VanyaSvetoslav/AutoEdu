@@ -26,6 +26,7 @@ import {
   MosregNotConfiguredError,
   MosregPersonNotConfiguredError,
   mosregDebugCall,
+  mosregScheduleDebugCall,
 } from './mosreg.js';
 import {
   escapeHtml,
@@ -83,7 +84,8 @@ const HELP_ADMIN = `${HELP_USER}
 /setstudent <code>&lt;student_id&gt;</code> [profile_id] — задать ID ученика
 /setperson <code>&lt;UUID&gt;</code> — задать person_id (UUID) для расписания
 /credstatus — статус сохранённых credentials
-/apidebug — сделать тестовый запрос к mosreg и показать сырой ответ`;
+/apidebug — тестовый запрос к mosreg /homeworks (сырой ответ)
+/scheduledebug — тестовый запрос к mosreg /eventcalendar (сырой ответ)`;
 
 function quickKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
@@ -582,6 +584,30 @@ export function registerHandlers(bot: Bot): void {
       } catch (err) {
         await ctx.reply(
           `❌ apidebug failed: <pre>${escapeHtml(String(err instanceof Error ? (err.stack ?? err.message) : err))}</pre>`,
+          { parse_mode: 'HTML' },
+        );
+      }
+    }),
+  );
+
+  bot.command('scheduledebug', (ctx) =>
+    requireAdmin(ctx, async () => {
+      try {
+        const d = todayIso();
+        const result = await mosregScheduleDebugCall(d, d);
+        const cookieKind = result.syntheticCookie ? 'synthetic' : 'user-provided';
+        const lines = [
+          `URL: ${result.url}`,
+          `Headers: Authorization len=${result.sentAuthLen}, Auth-Token len=${result.sentAuthTokenLen}, Cookie len=${result.sentCookieLen} (${cookieKind})`,
+          `→ HTTP ${result.status}`,
+          '',
+          'Body (first 400 chars):',
+          result.bodyPreview,
+        ];
+        await ctx.reply(`<pre>${escapeHtml(lines.join('\n'))}</pre>`, { parse_mode: 'HTML' });
+      } catch (err) {
+        await ctx.reply(
+          `❌ scheduledebug failed: <pre>${escapeHtml(String(err instanceof Error ? (err.stack ?? err.message) : err))}</pre>`,
           { parse_mode: 'HTML' },
         );
       }

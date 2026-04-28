@@ -217,6 +217,41 @@ export async function fetchSubjectMarks(): Promise<SubjectMarks[]> {
   return parsed.payload ?? [];
 }
 
+function buildScheduleHeaders(
+  token: string,
+  studentId: string,
+  profileId: string,
+  userCookie: string | null,
+): {
+  headers: Record<string, string>;
+  syntheticCookie: boolean;
+} {
+  // The eventcalendar endpoint historically rejects requests that only carry
+  // `Authorization: Bearer …` (which works fine for /api/family/web/v1/*).
+  // Reference: RedGuyRu/DnevnikApi sends `Auth-Token`, `x-mes-role: student`
+  // and a synthetic `Cookie: auth_token=<token>; student_id=<id>;` for this
+  // endpoint. We mirror that here.
+  const bareToken = token.startsWith('Bearer ') ? token.slice('Bearer '.length) : token;
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/plain, */*',
+    Authorization: token.startsWith('Bearer ') ? token : `Bearer ${token}`,
+    'Auth-Token': bareToken,
+    'Profile-Id': profileId,
+    'Profile-Type': 'student',
+    'User-Agent': USER_AGENT,
+    'x-mes-role': 'student',
+    'X-mes-subsystem': 'familyweb',
+  };
+  let syntheticCookie = false;
+  if (userCookie && userCookie.trim() !== '') {
+    headers.Cookie = userCookie;
+  } else {
+    headers.Cookie = `auth_token=${bareToken}; student_id=${studentId};`;
+    syntheticCookie = true;
+  }
+  return { headers, syntheticCookie };
+}
+
 export async function fetchSchedule(from: string, to: string): Promise<ScheduleEntry[]> {
   const creds = getMosregCredentials();
   if (!creds.token || !creds.studentId) {
@@ -236,17 +271,7 @@ export async function fetchSchedule(from: string, to: string): Promise<ScheduleE
     `&source_types=${encodeURIComponent(sources)}` +
     `&expand=homework`;
 
-  const headers: Record<string, string> = {
-    Accept: 'application/json, text/plain, */*',
-    Authorization: creds.token.startsWith('Bearer ') ? creds.token : `Bearer ${creds.token}`,
-    'Profile-Id': profileId,
-    'Profile-Type': 'student',
-    'User-Agent': USER_AGENT,
-    'X-mes-subsystem': 'familyweb',
-  };
-  if (creds.cookie && creds.cookie.trim() !== '') {
-    headers.Cookie = creds.cookie;
-  }
+  const { headers } = buildScheduleHeaders(creds.token, creds.studentId, profileId, creds.cookie);
 
   const res = await request(url, { method: 'GET', headers });
   const text = await res.body.text();
@@ -260,6 +285,55 @@ export async function fetchSchedule(from: string, to: string): Promise<ScheduleE
     throw new MosregApiError(res.statusCode, `Invalid JSON: ${text.slice(0, 200)}`);
   }
   return parsed.response ?? [];
+}
+
+export type MosregScheduleDebugResult = {
+  url: string;
+  sentAuthLen: number;
+  sentAuthTokenLen: number;
+  sentCookieLen: number;
+  syntheticCookie: boolean;
+  status: number;
+  bodyPreview: string;
+};
+
+export async function mosregScheduleDebugCall(
+  from: string,
+  to: string,
+): Promise<MosregScheduleDebugResult> {
+  const creds = getMosregCredentials();
+  if (!creds.token || !creds.studentId) {
+    throw new MosregNotConfiguredError();
+  }
+  if (!creds.personId) {
+    throw new MosregPersonNotConfiguredError();
+  }
+  const profileId = creds.profileId ?? creds.studentId;
+  const sources = 'PLAN,AE,EC,EVENTS,AFISHA,ORGANIZER,OLYMPIAD,PROF';
+  const url =
+    `${BASE_URL}/api/eventcalendar/v1/api/events` +
+    `?person_ids=${encodeURIComponent(creds.personId)}` +
+    `&begin_date=${encodeURIComponent(from)}` +
+    `&end_date=${encodeURIComponent(to)}` +
+    `&source_types=${encodeURIComponent(sources)}` +
+    `&expand=homework`;
+  const { headers, syntheticCookie } = buildScheduleHeaders(
+    creds.token,
+    creds.studentId,
+    profileId,
+    creds.cookie,
+  );
+  const res = await request(url, { method: 'GET', headers });
+  const body = await res.body.text();
+  return {
+    url,
+    sentAuthLen: Buffer.byteLength(headers.Authorization ?? '', 'utf8'),
+    sentAuthTokenLen: Buffer.byteLength(headers['Auth-Token'] ?? '', 'utf8'),
+    sentCookieLen: Buffer.byteLength(headers.Cookie ?? '', 'utf8'),
+    syntheticCookie,
+    status: res.statusCode,
+    bodyPreview: body.slice(0, 400),
+  };
 }
 
 export type MosregDebugResult = {
