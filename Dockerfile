@@ -34,13 +34,25 @@ ENV NODE_ENV=production
 # Default DB_PATH points at the Railway/Docker volume mount.
 ENV DB_PATH=/data/autoedu.sqlite
 
+# `gosu` lets the entrypoint start as root (so it can chown the host-owned
+# /data bind-mount), then drop to the unprivileged `node` user before exec-ing
+# the bot. ca-certificates is needed for outbound HTTPS to mosreg / Telegram.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gosu ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY package.json ./
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # /data is expected to be mounted as a Railway/Docker volume in production.
 # (Do not use the VOLUME keyword — Railway forbids it; the mount is configured in the Railway UI.)
 RUN mkdir -p /data && chown -R node:node /data /app
 
-USER node
+# We start as root so the entrypoint can fix ownership of the bind-mounted
+# /data dir on hosts where the user hasn't pre-chowned it. The entrypoint
+# then drops to `node` via gosu before running the bot.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]
