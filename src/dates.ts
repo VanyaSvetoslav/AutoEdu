@@ -65,3 +65,26 @@ export function parseRange(input: string): { from: string; to: string } | null {
 export function humanRangeRu(from: string, to: string): string {
   return from === to ? from : `${from} — ${to}`;
 }
+
+// Resolves user-supplied range arg accepted by /schedule and /subject:
+//   "" / "today"  -> today
+//   "tomorrow"    -> tomorrow
+//   "week"        -> 7-day window starting today
+//   "YYYY-MM-DD"  -> single day
+//   "YYYY-MM-DD..YYYY-MM-DD" -> range
+// Returns null for unrecognized input.
+export function resolveRangeArg(arg: string): { from: string; to: string } | null {
+  const a = arg.trim().toLowerCase();
+  if (!a || a === 'today') {
+    const d = todayIso();
+    return { from: d, to: d };
+  }
+  if (a === 'tomorrow') {
+    const d = tomorrowIso();
+    return { from: d, to: d };
+  }
+  if (a === 'week') {
+    return weekRange();
+  }
+  return parseRange(arg);
+}
