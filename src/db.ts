@@ -52,12 +52,28 @@ try {
   }
 }
 
+// Migration: cache Telegram-side user metadata (username, first/last name) so
+// /users can show human-readable names and tg:// links instead of bare ids.
+for (const col of ['username', 'first_name', 'last_name']) {
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT;`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/duplicate column name/i.test(msg)) {
+      throw err;
+    }
+  }
+}
+
 export type UserRow = {
   tg_id: number;
   role: 'admin' | 'user';
   used_key: string | null;
   joined_at: number;
   last_seen_at: number;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
 };
 
 export type InviteKeyRow = {
@@ -71,12 +87,19 @@ export type InviteKeyRow = {
 
 const stmts = {
   getUser: db.prepare<[number], UserRow>('SELECT * FROM users WHERE tg_id = ?'),
+  getUserByUsername: db.prepare<[string], UserRow>(
+    'SELECT * FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1',
+  ),
   upsertUser: db.prepare(`
-    INSERT INTO users (tg_id, role, used_key, joined_at, last_seen_at)
-    VALUES (@tg_id, @role, @used_key, @joined_at, @last_seen_at)
+    INSERT INTO users (tg_id, role, used_key, joined_at, last_seen_at, username, first_name, last_name)
+    VALUES (@tg_id, @role, @used_key, @joined_at, @last_seen_at, @username, @first_name, @last_name)
     ON CONFLICT(tg_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
   `),
   touchUser: db.prepare('UPDATE users SET last_seen_at = ? WHERE tg_id = ?'),
+  updateUserMeta: db.prepare(
+    'UPDATE users SET last_seen_at = ?, username = ?, first_name = ?, last_name = ? WHERE tg_id = ?',
+  ),
+  deleteUser: db.prepare('DELETE FROM users WHERE tg_id = ?'),
   listUsers: db.prepare<[], UserRow>('SELECT * FROM users ORDER BY joined_at DESC'),
 
   insertKey: db.prepare('INSERT INTO invite_keys (key, created_by, created_at) VALUES (?, ?, ?)'),
@@ -85,6 +108,11 @@ const stmts = {
     'UPDATE invite_keys SET used_by = ?, used_at = ? WHERE key = ? AND used_by IS NULL AND revoked = 0',
   ),
   revokeKey: db.prepare('UPDATE invite_keys SET revoked = 1 WHERE key = ?'),
+  // Frees up a previously consumed key so a new user can claim it later. Used
+  // by /kick when an admin wants to wipe a user without revoking their seat.
+  releaseKeyByUser: db.prepare(
+    'UPDATE invite_keys SET used_by = NULL, used_at = NULL WHERE used_by = ?',
+  ),
   listKeys: db.prepare<[], InviteKeyRow>(
     'SELECT * FROM invite_keys ORDER BY created_at DESC LIMIT 50',
   ),
@@ -116,11 +144,22 @@ const stmts = {
 
 const now = (): number => Math.floor(Date.now() / 1000);
 
-export function ensureUser(tgId: number, role: 'admin' | 'user', usedKey: string | null): UserRow {
+export type UserMeta = {
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+};
+
+export function ensureUser(
+  tgId: number,
+  role: 'admin' | 'user',
+  usedKey: string | null,
+  meta: UserMeta = { username: null, firstName: null, lastName: null },
+): UserRow {
   const existing = stmts.getUser.get(tgId);
   if (existing) {
-    stmts.touchUser.run(now(), tgId);
-    return existing;
+    stmts.updateUserMeta.run(now(), meta.username, meta.firstName, meta.lastName, tgId);
+    return stmts.getUser.get(tgId)!;
   }
   const t = now();
   stmts.upsertUser.run({
@@ -129,6 +168,9 @@ export function ensureUser(tgId: number, role: 'admin' | 'user', usedKey: string
     used_key: usedKey,
     joined_at: t,
     last_seen_at: t,
+    username: meta.username,
+    first_name: meta.firstName,
+    last_name: meta.lastName,
   });
   return stmts.getUser.get(tgId)!;
 }
@@ -137,12 +179,32 @@ export function getUser(tgId: number): UserRow | undefined {
   return stmts.getUser.get(tgId);
 }
 
-export function touchUser(tgId: number): void {
-  stmts.touchUser.run(now(), tgId);
+export function getUserByUsername(username: string): UserRow | undefined {
+  const cleaned = username.startsWith('@') ? username.slice(1) : username;
+  return stmts.getUserByUsername.get(cleaned);
+}
+
+export function touchUser(tgId: number, meta?: UserMeta): void {
+  if (meta) {
+    stmts.updateUserMeta.run(now(), meta.username, meta.firstName, meta.lastName, tgId);
+  } else {
+    stmts.touchUser.run(now(), tgId);
+  }
 }
 
 export function listUsers(): UserRow[] {
   return stmts.listUsers.all();
+}
+
+// Removes a user (revokes access). Optionally also frees the invite key the
+// user consumed, so the same seat can be reissued without /genkey. Returns
+// true if a row was deleted.
+export function deleteUser(tgId: number, opts: { releaseKey?: boolean } = {}): boolean {
+  if (opts.releaseKey) {
+    stmts.releaseKeyByUser.run(tgId);
+  }
+  const res = stmts.deleteUser.run(tgId);
+  return res.changes === 1;
 }
 
 export function createInviteKey(key: string, createdBy: number): void {

@@ -4,10 +4,12 @@ import { config } from './config.js';
 import {
   consumeInviteKey,
   createInviteKey,
+  deleteUser,
   ensureUser,
   getInviteKey,
   getMosregCredentials,
   getUser,
+  getUserByUsername,
   listInviteKeys,
   listUsers,
   revokeInviteKey,
@@ -17,6 +19,7 @@ import {
   setMosregToken,
   touchUser,
 } from './db.js';
+import type { UserMeta, UserRow } from './db.js';
 import { parseRange, shiftIso, todayIso, tomorrowIso, weekRange, humanRangeRu } from './dates.js';
 import {
   fetchHomeworks,
@@ -79,6 +82,8 @@ const HELP_ADMIN = `${HELP_USER}
 /keys — последние 50 ключей
 /revoke <code>KEY</code> — отозвать ключ
 /users — список пользователей
+/kick <code>&lt;tg_id|@username&gt;</code> — удалить пользователя из системы
+/kick <code>&lt;tg_id|@username&gt;</code> <code>--release</code> — удалить и освободить его ключ для повторного использования
 /settoken <code>&lt;Authorization&gt;</code> — обновить Bearer-токен mosreg
 /setcookie <code>&lt;Cookie&gt;</code> — обновить Cookie mosreg
 /setstudent <code>&lt;student_id&gt;</code> [profile_id] — задать ID ученика
@@ -86,6 +91,37 @@ const HELP_ADMIN = `${HELP_USER}
 /credstatus — статус сохранённых credentials
 /apidebug — тестовый запрос к mosreg /homeworks (сырой ответ)
 /scheduledebug — тестовый запрос к mosreg /eventcalendar (сырой ответ)`;
+
+// Pulls Telegram-side user metadata off a Context so we can persist it.
+function ctxUserMeta(ctx: Context): UserMeta {
+  return {
+    username: ctx.from?.username ?? null,
+    firstName: ctx.from?.first_name ?? null,
+    lastName: ctx.from?.last_name ?? null,
+  };
+}
+
+function fullName(u: { first_name: string | null; last_name: string | null }): string | null {
+  const parts = [u.first_name ?? '', u.last_name ?? ''].map((s) => s.trim()).filter(Boolean);
+  return parts.length === 0 ? null : parts.join(' ');
+}
+
+// Returns an HTML chunk that links to the user's Telegram profile by id and
+// shows their @username + display name when available. Falls back to a bare
+// numeric id when Telegram never gave us a username (e.g. user has none).
+function userMention(u: UserRow): string {
+  const name = fullName(u);
+  const username = u.username ? `@${u.username}` : null;
+  const display = username ?? name ?? `id ${u.tg_id}`;
+  const link = `<a href="tg://user?id=${u.tg_id}">${escapeHtml(display)}</a>`;
+  // Add a trailer with the bits not already in `display`, so we always show
+  // the numeric id (handy for /kick by id) and the full name when only
+  // @username was used in the link.
+  const extras: string[] = [];
+  if (username && name) extras.push(escapeHtml(name));
+  extras.push(`<code>${u.tg_id}</code>`);
+  return `${link} · ${extras.join(' · ')}`;
+}
 
 function quickKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
@@ -177,8 +213,12 @@ async function sendHomeworks(ctx: Context, from: string, to: string): Promise<vo
 }
 
 export function registerHandlers(bot: Bot): void {
+  // Refresh username/first_name/last_name on every interaction so /users can
+  // show human-readable identities and the admin can /kick by @username.
   bot.use(async (ctx, next) => {
-    if (ctx.from?.id) touchUser(ctx.from.id);
+    if (ctx.from?.id) {
+      touchUser(ctx.from.id, ctxUserMeta(ctx));
+    }
     await next();
   });
 
@@ -186,9 +226,10 @@ export function registerHandlers(bot: Bot): void {
     const tgId = ctx.from?.id;
     if (!tgId) return;
     const args = (ctx.match ?? '').toString().trim();
+    const meta = ctxUserMeta(ctx);
 
     if (tgId === ADMIN_ID) {
-      ensureUser(tgId, 'admin', null);
+      ensureUser(tgId, 'admin', null, meta);
       await ctx.reply(`Привет, админ! 👋\n\n${HELP_ADMIN}`, { parse_mode: 'HTML' });
       return;
     }
@@ -215,8 +256,20 @@ export function registerHandlers(bot: Bot): void {
       await ctx.reply('❌ Не удалось активировать ключ. Попробуй ещё раз.');
       return;
     }
-    ensureUser(tgId, 'user', args);
+    const userRow = ensureUser(tgId, 'user', args, meta);
     await ctx.reply(`✅ Доступ выдан!\n\n${HELP_USER}`, { parse_mode: 'HTML' });
+
+    // Notify admin so they know who claimed the invite without /users-checking.
+    if (ADMIN_ID && ADMIN_ID !== tgId) {
+      const text =
+        `🔔 Новый пользователь активировал ключ <code>${escapeHtml(args)}</code>:\n` +
+        `${userMention(userRow)}`;
+      try {
+        await ctx.api.sendMessage(ADMIN_ID, text, { parse_mode: 'HTML' });
+      } catch (err) {
+        console.error('failed to notify admin of key activation', err);
+      }
+    }
   });
 
   bot.command('help', async (ctx) => {
@@ -424,14 +477,21 @@ export function registerHandlers(bot: Bot): void {
         return;
       }
       const lines = rows.map((r) => {
-        const status = r.revoked
-          ? '🚫 отозван'
-          : r.used_by
-            ? `✅ использован: ${r.used_by}`
-            : '🟢 свободен';
+        let status: string;
+        if (r.revoked) {
+          status = '🚫 отозван';
+        } else if (r.used_by) {
+          const u = getUser(r.used_by);
+          status = `✅ использован: ${u ? userMention(u) : `<code>${r.used_by}</code>`}`;
+        } else {
+          status = '🟢 свободен';
+        }
         return `<code>${r.key}</code> — ${status}`;
       });
-      await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+      await ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
     }),
   );
 
@@ -459,9 +519,59 @@ export function registerHandlers(bot: Bot): void {
       const lines = rows.map((u) => {
         const role = u.role === 'admin' ? '👑' : '👤';
         const joined = new Date(u.joined_at * 1000).toISOString().slice(0, 10);
-        return `${role} <code>${u.tg_id}</code> · ${joined}`;
+        return `${role} ${userMention(u)} · ${joined}`;
       });
-      await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+      await ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    }),
+  );
+
+  bot.command('kick', (ctx) =>
+    requireAdmin(ctx, async () => {
+      const arg = (ctx.match ?? '').toString().trim();
+      if (!arg) {
+        await ctx.reply(
+          'Использование:\n<code>/kick &lt;tg_id|@username&gt;</code> — удалить пользователя\n<code>/kick &lt;tg_id|@username&gt; --release</code> — удалить и освободить его ключ для повторного использования',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      const parts = arg.split(/\s+/);
+      const target = parts[0]!;
+      const releaseKey = parts.slice(1).includes('--release');
+
+      let user: UserRow | undefined;
+      if (/^\d+$/.test(target)) {
+        user = getUser(Number(target));
+      } else {
+        user = getUserByUsername(target);
+      }
+      if (!user) {
+        await ctx.reply(
+          `❌ Пользователь не найден.\n\n💡 По <code>@username</code> ищется только среди тех, кто хоть раз писал боту после обновления (так Telegram сообщает username). Попробуй по числовому id из /users.`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      if (user.tg_id === ADMIN_ID) {
+        await ctx.reply('🚫 Нельзя удалить админа.');
+        return;
+      }
+      const ok = deleteUser(user.tg_id, { releaseKey });
+      if (!ok) {
+        await ctx.reply('❌ Не удалось удалить пользователя (уже отсутствует?).');
+        return;
+      }
+      const releasedNote =
+        releaseKey && user.used_key
+          ? `\nКлюч <code>${escapeHtml(user.used_key)}</code> освобождён и снова свободен.`
+          : '';
+      await ctx.reply(`✅ Удалён: ${userMention(user)}${releasedNote}`, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
     }),
   );
 
