@@ -153,45 +153,135 @@ function formatMarkLine(m: SubjectMark): string {
   return `${value}${weight}${exam}${form}${date}${comment}`;
 }
 
+// Σ(value*weight) / Σ(weight) over numeric mark values. Skips non-numeric
+// values like "Н" / "ОСВ". Returns null if there are no numeric marks.
+function weightedAverage(marks: SubjectMark[]): number | null {
+  let sum = 0;
+  let weights = 0;
+  for (const m of marks) {
+    const v = Number(m.value);
+    if (!Number.isFinite(v)) continue;
+    const w = m.weight && m.weight > 0 ? m.weight : 1;
+    sum += v * w;
+    weights += w;
+  }
+  if (weights === 0) return null;
+  return sum / weights;
+}
+
+function formatAverage(avg: number | null): string {
+  return avg === null ? '—' : avg.toFixed(2);
+}
+
+// "5×3 · 4×6 · 3×2"
+function markDistribution(marks: SubjectMark[]): string {
+  const counts = new Map<string, number>();
+  for (const m of marks) {
+    if (!Number.isFinite(Number(m.value))) continue;
+    counts.set(m.value, (counts.get(m.value) ?? 0) + 1);
+  }
+  if (counts.size === 0) return '';
+  const ordered = [...counts.entries()].sort(([a], [b]) => Number(b) - Number(a));
+  return ordered.map(([v, c]) => `${escapeHtml(v)}×${c}`).join(' · ');
+}
+
+// "I · II · III" mark digest from periods[].value, with — for empty.
+function periodDigest(periods: SubjectMarkPeriod[]): string {
+  if (periods.length === 0) return '';
+  return periods
+    .map((p) => {
+      const v = p.value && p.value.trim() ? p.value.trim() : '—';
+      return escapeHtml(v);
+    })
+    .join(' · ');
+}
+
 export function formatMarksOverview(subjects: SubjectMarks[]): string[] {
   if (subjects.length === 0) {
     return ['<b>📊 Оценки</b>\n\n<i>Оценок пока нет.</i>'];
   }
   const sorted = [...subjects].sort((a, b) => a.subject_name.localeCompare(b.subject_name, 'ru'));
-  const lines: string[] = ['<b>📊 Оценки — средние по предметам</b>', ''];
+  const lines: string[] = [
+    '<b>📊 Оценки</b>',
+    '<i>Формат: предмет — оценки за периоды (I · II · III) · средневзвешенная за всё время · год.</i>',
+    '<i>«Средневзвешенная» — это число, которое сам считает дневник по всем оценкам с весами; оно может отличаться от итоговой оценки за период.</i>',
+    '',
+  ];
   for (const s of sorted) {
     const icon = dynamicIcon(s.dynamic);
-    const avg = s.average ?? '—';
+    const periods = periodDigest(s.periods);
+    const calc = formatAverage(weightedAverage(s.periods.flatMap((p) => p.marks)));
+    const apiAvg = s.average && s.average.trim() ? s.average : null;
+    const avgPart = apiAvg ? `ср. <b>${escapeHtml(apiAvg)}</b>` : `ср. <b>${calc}</b>`;
     const year = s.year_mark ? ` · год: <b>${escapeHtml(s.year_mark)}</b>` : '';
-    lines.push(`${icon} ${escapeHtml(s.subject_name)} — <b>${escapeHtml(avg)}</b>${year}`);
+    const periodsPart = periods ? ` — ${periods}` : '';
+    lines.push(`${icon} <b>${escapeHtml(s.subject_name)}</b>${periodsPart} · ${avgPart}${year}`);
   }
   lines.push('');
   lines.push('<i>Подробно: /marks &lt;часть_названия_предмета&gt;</i>');
   return [lines.join('\n')];
 }
 
-function formatPeriod(p: SubjectMarkPeriod): string {
-  const lines: string[] = [];
+function formatPeriodHeader(p: SubjectMarkPeriod): string {
   const icon = dynamicIcon(p.dynamic);
   const range = `${escapeHtml(p.start)}–${escapeHtml(p.end)}`;
-  lines.push(`<b>🗓 ${escapeHtml(p.title)}</b> (${range}) — ${escapeHtml(p.value)} ${icon}`);
+  const value = p.value && p.value.trim() ? p.value.trim() : '—';
+  return `<b>🗓 ${escapeHtml(p.title)}</b> (${range}) · итог: <b>${escapeHtml(value)}</b> ${icon}`;
+}
+
+function formatPeriod(p: SubjectMarkPeriod): string {
+  const lines: string[] = [formatPeriodHeader(p)];
   if (p.marks.length === 0) {
     lines.push('<i>(оценок нет)</i>');
-  } else {
-    const sorted = [...p.marks].sort((a, b) => a.date.localeCompare(b.date));
-    for (const m of sorted) {
-      lines.push(`• ${formatMarkLine(m)}`);
-    }
+    return lines.join('\n');
+  }
+  const calc = weightedAverage(p.marks);
+  const dist = markDistribution(p.marks);
+  lines.push(
+    `<i>Расчётная средневзвешенная: <b>${formatAverage(calc)}</b> · оценок: ${p.marks.length}</i>`,
+  );
+  if (dist) {
+    lines.push(`<i>Распределение: ${dist}</i>`);
+  }
+  const sorted = [...p.marks].sort((a, b) => a.date.localeCompare(b.date));
+  for (const m of sorted) {
+    lines.push(`• ${formatMarkLine(m)}`);
   }
   return lines.join('\n');
 }
 
 export function formatSubjectMarks(subject: SubjectMarks): string[] {
-  const header = [
-    `<b>📊 ${escapeHtml(subject.subject_name)}</b>`,
-    `Средняя: <b>${escapeHtml(subject.average ?? '—')}</b> ${dynamicIcon(subject.dynamic)}` +
-      (subject.year_mark ? ` · год: <b>${escapeHtml(subject.year_mark)}</b>` : ''),
-  ].join('\n');
+  const headerLines = [
+    `<b>📊 ${escapeHtml(subject.subject_name)}</b> ${dynamicIcon(subject.dynamic)}`,
+    '',
+  ];
+
+  // Compact summary block at the top so the user sees итоги без листания.
+  headerLines.push('<b>Итоги по периодам</b>');
+  if (subject.periods.length === 0) {
+    headerLines.push('<i>(периодов нет)</i>');
+  } else {
+    for (const p of subject.periods) {
+      const v = p.value && p.value.trim() ? p.value.trim() : '—';
+      headerLines.push(`🗓 ${escapeHtml(p.title)}: <b>${escapeHtml(v)}</b>`);
+    }
+  }
+  if (subject.year_mark) {
+    headerLines.push(`📅 Год: <b>${escapeHtml(subject.year_mark)}</b>`);
+  }
+  if (subject.average && subject.average.trim()) {
+    headerLines.push(
+      `🌍 Средневзвешенная за всё время (по дневнику): <b>${escapeHtml(subject.average)}</b>`,
+    );
+  }
+  const allMarks = subject.periods.flatMap((p) => p.marks);
+  const calcAll = weightedAverage(allMarks);
+  if (calcAll !== null) {
+    headerLines.push(
+      `🧮 Средневзвешенная за всё время (расчётная): <b>${formatAverage(calcAll)}</b> · оценок: ${allMarks.length}`,
+    );
+  }
+  const header = headerLines.join('\n');
   const periods = subject.periods.map(formatPeriod);
 
   const messages: string[] = [];
